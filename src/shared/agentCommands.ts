@@ -4,6 +4,7 @@ export type AgentIntent =
   | { type: 'remove-silence'; minimumDuration: number }
   | { type: 'find-silence'; minimumDuration: number }
   | { type: 'delete-range'; start: number; end: number }
+  | { type: 'delete-intro' }
   | { type: 'set-duration'; duration: number }
   | { type: 'set-aspect-ratio'; aspectRatio: AspectRatio; preset: string }
   | { type: 'adjust-volume'; percent: number }
@@ -47,6 +48,10 @@ export function parseAgentIntent(message: string): AgentIntent {
 
   if (/\b(undo)\b|تراجع|الغاء آخر تعديل|ألغِ آخر تعديل|إلغاء آخر تعديل|\bannul(?:e|er)\b/.test(text)) return { type: 'undo' }
   if (/\b(redo)\b|إعادة آخر تعديل|أعد آخر تعديل|اعادة آخر تعديل|\b(?:rétablis|retablis|rétablir|retablir)\b/.test(text)) return { type: 'redo' }
+
+  if (/(?:قص|احذف|أزل|إزالة|حذف).*(?:المقدمة|المقدم|البداية)|(?:المقدمة|البداية).*(?:قص|احذف|أزل|إزالة|حذف)|remove.*(?:intro|opening)|(?:intro|opening).*(?:remove|cut|delete)/i.test(text)) {
+    return { type: 'delete-intro' }
+  }
 
   if (/حلل\s*(?:الفيديو|المشروع)?|تحليل\s*(?:الفيديو|المشروع)?|analy[sz]e\s+(?:the\s+)?video|\banalys(?:e|er)\b/.test(text)) {
     return { type: 'analyze' }

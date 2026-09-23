@@ -46,13 +46,25 @@ describe('evidence-based Shorts candidates', () => {
     expect(JSON.stringify(top)).not.toContain(asset.filePath)
   })
 
-  it('refuses to invent candidates without local transcript evidence', () => {
+  it('uses approved visual-index evidence when local transcript is unavailable', () => {
     const project = addMediaToTimeline(createProject('No transcript', 'C:/Project'), [asset])
+    project.analysisByMedia[asset.id] = {
+      mediaId: asset.id, analyzedAt: new Date(0).toISOString(), scenes: [{ start: 0, end: 20 }, { start: 20, end: 40 }], silences: [], transcript: [],
+      audio: { clippingDetected: false, silenceCount: 0, analyzed: true },
+      quality: { width: 1920, height: 1080, fps: 30, videoCodec: 'h264', notes: [] }, warnings: [],
+      visualIndex: {
+        provider: 'gemini', analyzedAt: new Date(0).toISOString(), sampleIntervalSeconds: 1, durationSeconds: 40, frameCount: 40,
+        shots: [{ index: 1, start: 0, end: 20, description: 'A person demonstrates a product.' }, { index: 2, start: 20, end: 40, description: 'The product is shown in close-up.' }],
+        moments: [
+          { timestampSeconds: 2, second: 2, shotIndex: 1, description: 'A person demonstrates a product.', visibleText: '' },
+          { timestampSeconds: 12, second: 12, shotIndex: 1, description: 'The person points to a feature.', visibleText: '' },
+          { timestampSeconds: 24, second: 24, shotIndex: 2, description: 'The product is shown in close-up.', visibleText: '' }
+        ], summary: 'A product demonstration.'
+      }
+    }
     const result = findShortCandidates(project)
-    expect(result).toEqual({
-      available: false,
-      candidates: [],
-      reason: 'No local transcript is available for current video clips. Run local transcription before searching for Shorts.'
-    })
+    expect(result.available).toBe(true)
+    expect(result.candidates[0].transcriptExcerpt).toContain('A person demonstrates a product.')
+    expect(result.candidates[0].evidence.transcriptSegments).toBe(0)
   })
 })

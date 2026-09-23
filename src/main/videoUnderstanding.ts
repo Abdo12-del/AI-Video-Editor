@@ -4,7 +4,7 @@ import type { MediaAsset, Scene, UiLanguage, VisualIndex, VisualMoment, VisualSh
 import { extractVisualFrameAt, extractVisualFramesPerSecond, ensureMediaJobActive, registerMediaJobCancellation, type ProgressReporter } from './mediaEngine'
 import { generateGeminiTurn } from './geminiProvider'
 
-const FRAMES_PER_REQUEST = 12
+const FRAMES_PER_REQUEST = 6
 const MAX_FRAME_DESCRIPTION = 280
 const MAX_SHOT_DESCRIPTION = 700
 

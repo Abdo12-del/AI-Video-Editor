@@ -29,7 +29,7 @@ describe('Gemini generateContent client', () => {
 
     expect(fetchMock).toHaveBeenCalledOnce()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('models/gemini-3.8-flash:generateContent')
+    expect(url).toContain('models/gemini-2.5-flash:generateContent')
     expect(url).not.toContain(key)
     expect(init.headers).toMatchObject({ 'x-goog-api-key': key })
     const body = JSON.parse(String(init.body)) as Record<string, unknown>

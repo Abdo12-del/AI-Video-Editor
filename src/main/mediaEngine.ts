@@ -311,11 +311,21 @@ export async function extractVisualFramesPerSecond(asset: MediaAsset, outputDire
 export async function extractVisualFrameAt(asset: MediaAsset, timeSeconds: number, outputPath: string, jobId: string): Promise<void> {
   if (!Number.isFinite(timeSeconds) || timeSeconds < 0 || timeSeconds >= asset.duration) throw new Error('Frame timestamp must fall inside the source video.')
   await mkdir(dirname(outputPath), { recursive: true })
-  await runCommand(getFfmpegPath(), [
-    '-hide_banner', '-loglevel', 'error', '-y', '-ss', timeSeconds.toFixed(3), '-i', asset.filePath,
-    '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=512:-2:flags=fast_bilinear', '-q:v', '8', outputPath
-  ], { jobId, timeoutMs: 40_000 })
-  if (!existsSync(outputPath)) throw new Error(`FFmpeg did not produce a still frame at ${timeSeconds.toFixed(2)} seconds.`)
+  const attempts = [timeSeconds, Math.max(0, timeSeconds - 0.25)]
+  let lastError: unknown
+  for (const timestamp of attempts) {
+    await rm(outputPath, { force: true })
+    try {
+      await runCommand(getFfmpegPath(), [
+        '-hide_banner', '-loglevel', 'error', '-y', '-ss', timestamp.toFixed(3), '-i', asset.filePath,
+        '-map', '0:v:0', '-an', '-sn', '-frames:v', '1', '-vf', 'scale=512:-2:flags=fast_bilinear', '-q:v', '8', outputPath
+      ], { jobId, timeoutMs: 40_000 })
+      if (existsSync(outputPath)) return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw new Error(`FFmpeg did not produce a still frame at ${timeSeconds.toFixed(2)} seconds.${lastError ? ` ${String(lastError)}` : ''}`)
 }
 
 export async function createWaveform(filePath: string, waveformPath: string): Promise<void> {
@@ -353,12 +363,25 @@ async function detectSilences(asset: MediaAsset, jobId: string): Promise<Silence
   return parseSilences(stderr, asset.duration)
 }
 
-async function detectScenes(asset: MediaAsset, jobId: string): Promise<Scene[]> {
+async function detectScenes(asset: MediaAsset, jobId: string, report?: (progress: number, message: string) => void): Promise<Scene[]> {
   if (asset.duration < 1) return [{ start: 0, end: asset.duration }]
+  let progressBuffer = ''
   const { stderr } = await runCommand(getFfmpegPath(), [
     '-hide_banner', '-nostats', '-i', asset.filePath,
-    '-vf', "select='gt(scene,0.34)',showinfo", '-an', '-vsync', '0', '-f', 'null', '-'
-  ], { jobId, timeoutMs: Math.max(90_000, asset.duration * 12_000) })
+    '-vf', "select='gt(scene,0.34)',showinfo", '-an', '-vsync', '0', '-f', 'null', '-progress', 'pipe:1', '-'
+  ], {
+    jobId,
+    timeoutMs: Math.max(90_000, asset.duration * 12_000),
+    onStdout: (chunk) => {
+      progressBuffer += chunk
+      const latest = [...progressBuffer.matchAll(/out_time_ms=(\d+)/g)].at(-1)?.[1]
+      if (latest) {
+        const percent = Math.max(0, Math.min(100, Number(latest) / 1_000_000 / asset.duration * 100))
+        report?.(percent, `Detecting scene changes (${Math.round(percent)}%)…`)
+      }
+      progressBuffer = progressBuffer.slice(-2000)
+    }
+  })
   const times = [...stderr.matchAll(/pts_time:([\d.]+)/g)]
     .map((match) => Number(match[1]))
     .filter((time) => Number.isFinite(time) && time > 0.15 && time < asset.duration - 0.1)
@@ -504,7 +527,9 @@ export async function analyzeMedia(
   const silences = await detectSilences(asset, jobId)
   throwIfCancelled(jobId)
   report(32, `Found ${silences.length} silence regions`, 'analysis')
-  const scenes = asset.width > 0 && asset.height > 0 ? await detectScenes(asset, jobId) : []
+  const scenes = asset.width > 0 && asset.height > 0
+    ? await detectScenes(asset, jobId, (progress, message) => report(32 + progress * 0.33, message, 'analysis'))
+    : []
   throwIfCancelled(jobId)
   report(65, `Indexed ${scenes.length} scenes`, 'analysis')
   const audio = await analyzeAudio(asset, jobId)

@@ -29,6 +29,54 @@ export interface ShortCandidatesResult {
   reason?: string
 }
 
+function makeVisualCandidate(
+  project: ProjectData,
+  clip: ReturnType<typeof getVideoClips>[number],
+  maximumDuration: number,
+  anchor: number
+): ShortCandidate | null {
+  const asset = project.media.find((item) => item.id === clip.mediaId)
+  const analysis = project.analysisByMedia[clip.mediaId]
+  const visualIndex = analysis?.visualIndex
+  if (!asset || !visualIndex || !visualIndex.moments.length) return null
+  const sourceStart = Math.max(clip.sourceIn, Math.min(anchor, clip.sourceOut - Math.min(8, maximumDuration)))
+  const sourceEnd = Math.min(clip.sourceOut, sourceStart + maximumDuration)
+  const durationSeconds = sourceEnd - sourceStart
+  if (durationSeconds < Math.min(8, maximumDuration)) return null
+  const moments = visualIndex.moments.filter((moment) => moment.timestampSeconds >= sourceStart && moment.timestampSeconds < sourceEnd)
+  if (!moments.length) return null
+  const silenceSeconds = overlapDuration((analysis?.silences ?? []).map(({ start, end }) => ({ start, end })), sourceStart, sourceEnd)
+  const sceneBoundaryCount = (analysis?.scenes ?? []).filter((scene) => scene.start > sourceStart + 0.5 && scene.start < sourceEnd - 0.5).length
+  const visualCoverage = Math.min(1, moments.length / Math.max(1, durationSeconds * 0.65))
+  const silenceRatio = Math.min(1, silenceSeconds / durationSeconds)
+  const score = Math.round(Math.max(0, Math.min(100, (
+    visualCoverage * 0.62
+    + Math.min(1, sceneBoundaryCount / 4) * 0.28
+    + (1 - silenceRatio) * 0.1
+  ) * 100)))
+  const timelineStart = clip.position + sourceStart - clip.sourceIn
+  return {
+    id: `visual-short-${clip.id}-${Math.round(sourceStart * 10)}`,
+    clipId: clip.id,
+    mediaId: asset.id,
+    mediaName: asset.name.slice(0, 120),
+    timelineStart: Number(timelineStart.toFixed(2)),
+    timelineEnd: Number((timelineStart + durationSeconds).toFixed(2)),
+    sourceStart: Number(sourceStart.toFixed(2)),
+    sourceEnd: Number(sourceEnd.toFixed(2)),
+    durationSeconds: Number(durationSeconds.toFixed(2)),
+    score,
+    transcriptExcerpt: moments.map((moment) => `[${moment.timestampSeconds.toFixed(1)}s] ${moment.description}`).join(' … ').slice(0, 700),
+    evidence: {
+      transcriptSegments: 0,
+      wordCount: 0,
+      speechCoveragePercent: 0,
+      sceneBoundaryCount,
+      silenceSeconds: Number(silenceSeconds.toFixed(2))
+    }
+  }
+}
+
 function overlapDuration(rows: Array<{ start: number; end: number }>, start: number, end: number): number {
   const ranges = rows.map((row) => ({ start: Math.max(start, row.start), end: Math.min(end, row.end) }))
     .filter((range) => range.end > range.start)
@@ -120,7 +168,23 @@ export function findShortCandidates(project: ProjectData, maximumDuration = 30, 
   const clips = getVideoClips(project)
   if (!clips.length) return { available: false, candidates: [], reason: 'There are no video clips on the Timeline.' }
   const hasTranscript = clips.some((clip) => (project.analysisByMedia[clip.mediaId]?.transcript.length ?? 0) > 0)
-  if (!hasTranscript) return { available: false, candidates: [], reason: 'No local transcript is available for current video clips. Run local transcription before searching for Shorts.' }
+  if (!hasTranscript) {
+    const visualCandidates = clips.flatMap((clip) => {
+      const analysis = project.analysisByMedia[clip.mediaId]
+      const anchors = [clip.sourceIn, ...(analysis?.visualIndex?.moments ?? []).map((moment) => moment.timestampSeconds)]
+      return [...new Set(anchors)].map((anchor) => makeVisualCandidate(project, clip, maximum, anchor)).filter((candidate): candidate is ShortCandidate => candidate !== null)
+    }).sort((left, right) => right.score - left.score || left.timelineStart - right.timelineStart)
+    const selectedVisual: ShortCandidate[] = []
+    for (const candidate of visualCandidates) {
+      const duplicate = selectedVisual.some((existing) => existing.clipId === candidate.clipId
+        && Math.max(0, Math.min(existing.sourceEnd, candidate.sourceEnd) - Math.max(existing.sourceStart, candidate.sourceStart)) / Math.min(existing.durationSeconds, candidate.durationSeconds) > 0.65)
+      if (!duplicate) selectedVisual.push(candidate)
+      if (selectedVisual.length >= take) break
+    }
+    return selectedVisual.length
+      ? { available: true, candidates: selectedVisual, reason: 'Ranked from Gemini visual-index evidence, scene boundaries, and local silence analysis; no transcript was available.' }
+      : { available: false, candidates: [], reason: 'Run visual analysis with Gemini or local transcription before searching for Shorts.' }
+  }
 
   const candidates = clips.flatMap((clip) => {
     const transcript = (project.analysisByMedia[clip.mediaId]?.transcript ?? [])

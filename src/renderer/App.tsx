@@ -163,6 +163,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!geminiKeyStatus.secureStorageAvailable) return
+    if (!geminiKeyStatus.configured && !showSettings) {
+      setShowSettings(true)
+    }
+  }, [geminiKeyStatus.configured, geminiKeyStatus.secureStorageAvailable, showSettings])
+
+  useEffect(() => {
     const html = document.documentElement
     html.lang = settings.language
     html.dir = isArabic ? 'rtl' : 'ltr'
@@ -487,6 +494,12 @@ export default function App() {
         ? { ...current, analysisByMedia: { ...current.analysisByMedia, ...result.analysisByMedia }, updatedAt: new Date().toISOString() }
         : current)
       if (result.warnings.length) showToast(result.warnings[0])
+      const analyzed = mediaIds?.length === 1 ? result.analysisByMedia[mediaIds[0]] : undefined
+      if (analyzed) {
+        showToast(`${t('analysisComplete')}: ${analyzed.scenes.length} ${t('scenes')} · ${analyzed.silences.length} ${t('silences')} · ${analyzed.transcript.length} ${t('transcriptSegments')}`)
+      } else if (!result.warnings.length) {
+        showToast(t('analysisComplete'))
+      }
       setRightTab('transcript')
     } catch (error) {
       markJobFailure(jobId, error)
@@ -1373,7 +1386,7 @@ export default function App() {
             <textarea value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendChat() } }} placeholder={t('askAnything')} rows={2} disabled={uiLocked} />
             <div className="composer-toolbar"><span><span className="composer-dot" />{geminiReady ? t('geminiProviderName') : t('geminiSetupNeeded')}</span><button className="send-button" type="submit" disabled={!chatDraft.trim() || uiLocked} title={t('send')}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div>
           </form>
-        </> : rightTab === 'transcript' ? <TranscriptPanel activeAsset={activeAsset} analysis={analysis} search={transcriptSearch} setSearch={setTranscriptSearch} t={t} onAnalyze={() => void runAnalysis(project, activeAsset ? [activeAsset.id] : undefined)} onSetup={() => setShowSettings(true)} onSeek={handleTranscriptSeek} onCaptions={addCaptions} /> : rightTab === 'subtitles' ? <SubtitleEditorPanel subtitles={project.subtitles} selected={selectedSubtitle} duration={duration} t={t} disabled={uiLocked} onAdd={addManualSubtitle} onSelect={selectSubtitle} onSave={saveSubtitle} onDelete={removeSubtitle} /> : <HistoryPanel project={project} t={t} />}
+        </> : rightTab === 'transcript' ? <TranscriptPanel activeAsset={activeAsset} analysis={analysis} search={transcriptSearch} setSearch={setTranscriptSearch} t={t} analyzing={activeJob?.kind === 'analysis' && activeJob.status === 'running'} analysisProgress={activeJob} onAnalyze={() => void runAnalysis(project, activeAsset ? [activeAsset.id] : undefined)} onSetup={() => setShowSettings(true)} onSeek={handleTranscriptSeek} onCaptions={addCaptions} /> : rightTab === 'subtitles' ? <SubtitleEditorPanel subtitles={project.subtitles} selected={selectedSubtitle} duration={duration} t={t} disabled={uiLocked} onAdd={addManualSubtitle} onSelect={selectSubtitle} onSave={saveSubtitle} onDelete={removeSubtitle} /> : <HistoryPanel project={project} t={t} />}
         </div>
       </aside>
     </div>
@@ -1419,17 +1432,18 @@ function MediaRuntimeBanner({ status, t, onRetry }: { status: MediaRuntimeStatus
   </section>
 }
 
-function TranscriptPanel({ activeAsset, analysis, search, setSearch, t, onAnalyze, onSetup, onSeek, onCaptions }: {
+function TranscriptPanel({ activeAsset, analysis, search, setSearch, t, analyzing, analysisProgress, onAnalyze, onSetup, onSeek, onCaptions }: {
   activeAsset?: MediaAsset; analysis?: AnalysisResult; search: string; setSearch: (value: string) => void; t: (key: string) => string;
-  onAnalyze: () => void; onSetup: () => void; onSeek: (segment: TranscriptSegment, mediaId: string) => void; onCaptions: () => void
+  analyzing: boolean; analysisProgress: JobState | null; onAnalyze: () => void; onSetup: () => void; onSeek: (segment: TranscriptSegment, mediaId: string) => void; onCaptions: () => void
 }) {
   const transcript = analysis?.transcript ?? []
   const query = search.trim().toLocaleLowerCase()
   const matching = query ? transcript.filter((segment) => segment.text.toLocaleLowerCase().includes(query)) : transcript
   const wordCount = transcript.reduce((sum, segment) => sum + (segment.words?.length ?? segment.text.split(/\s+/).filter(Boolean).length), 0)
   return <div className="transcript-panel">
-    <div className="side-heading"><div><span className="section-kicker">{t('analysisIndex')}</span><h2>{t('transcript')}</h2></div><button className="icon-button" type="button" title={t('rerunAnalysis')} onClick={onAnalyze}><Activity size={16} /></button></div>
+    <div className="side-heading"><div><span className="section-kicker">{t('analysisIndex')}</span><h2>{t('transcript')}</h2></div><button className="icon-button" type="button" title={t('rerunAnalysis')} onClick={onAnalyze} disabled={analyzing}>{analyzing ? <LoaderCircle className="spin" size={16} /> : <Activity size={16} />}</button></div>
     {activeAsset ? <div className="analysis-target"><span className="media-target-icon"><Film size={14} /></span><div><strong>{activeAsset.name}</strong><small>{formatTime(activeAsset.duration)} · {activeAsset.width}×{activeAsset.height}</small></div><span className={analysis ? 'analysis-check' : 'analysis-pending'}>{analysis ? <Check size={13} /> : <span />}</span></div> : <div className="analysis-placeholder">{t('noMedia')}</div>}
+    {analyzing && analysisProgress && <div className="analysis-progress-card" role="status"><div className="analysis-progress-heading"><span><LoaderCircle className="spin" size={14} />{t('loading')}</span><strong>{Math.round(analysisProgress.progress)}%</strong></div><div className="analysis-progress-track"><i style={{ width: `${Math.max(2, Math.min(100, analysisProgress.progress))}%` }} /></div><p>{analysisProgress.message}</p></div>}
     {analysis ? <>
       <div className="analysis-metrics"><div><strong>{analysis.scenes.length}</strong><span>{t('scenes')}</span></div><div><strong>{analysis.silences.length}</strong><span>{t('silences')}</span></div><div><strong>{wordCount}</strong><span>{t('transcriptWords')}</span></div></div>
       <div className="analysis-signal"><div className="signal-title"><span><AudioLines size={14} />{t('audioLevel')}</span><strong>{analysis.audio.meanVolumeDb === undefined ? '—' : `${analysis.audio.meanVolumeDb.toFixed(1)} dB`}</strong></div><div className="signal-meter"><i style={{ width: `${analysis.audio.meanVolumeDb === undefined ? 0 : Math.max(5, Math.min(100, 100 + analysis.audio.meanVolumeDb))}%` }} /></div>{analysis.audio.clippingDetected && <small className="signal-warning"><CircleAlert size={12} />{t('clipping')}</small>}</div>
@@ -1441,7 +1455,7 @@ function TranscriptPanel({ activeAsset, analysis, search, setSearch, t, onAnalyz
       </div>
       <div className="analysis-subsection"><div className="analysis-subsection-head"><strong><Clapperboard size={14} />{t('sceneIndex')}</strong><span>{analysis.scenes.length}</span></div>{analysis.scenes.slice(0, 10).map((scene, index) => <div className="scene-row" key={`${scene.start}-${index}`}><span className="scene-number">{String(index + 1).padStart(2, '0')}</span><span>{rangeLabel(scene.start, scene.end)}</span><i style={{ width: `${Math.max(20, Math.min(85, (scene.end - scene.start) * 8))}%` }} /></div>)}{analysis.scenes.length > 10 && <small className="more-scenes">+{analysis.scenes.length - 10} more scenes</small>}</div>
       {analysis.silences.length > 0 && <div className="analysis-subsection silence-list"><div className="analysis-subsection-head"><strong><Waves size={14} />{t('silences')}</strong><span>{analysis.silences.length}</span></div>{analysis.silences.slice(0, 6).map((silence, index) => <div className="silence-row" key={`${silence.start}-${index}`}><span>{rangeLabel(silence.start, silence.end)}</span><b>{silence.duration.toFixed(1)}s</b></div>)}</div>}
-    </> : <div className="no-analysis-card"><div><Activity size={19} /></div><p>{t('noAnalysis')}</p><button className="button button-primary" type="button" onClick={onAnalyze}><Sparkles size={14} />{t('startAnalysis')}</button><small>FFmpeg · local, background processing</small></div>}
+    </> : <div className="no-analysis-card"><div><Activity size={19} /></div><p>{t('noAnalysis')}</p><button className="button button-primary" type="button" onClick={onAnalyze} disabled={analyzing}>{analyzing ? <LoaderCircle className="spin" size={14} /> : <Sparkles size={14} />}{analyzing ? t('loading') : t('startAnalysis')}</button><small>FFmpeg · local, background processing</small></div>}
     {analysis && !transcript.length && <div className="transcript-setup-compact"><MicIcon /><span>{t('transcriptHint')}</span><button type="button" onClick={onSetup}>{t('setupWhisper')}</button></div>}
   </div>
 }

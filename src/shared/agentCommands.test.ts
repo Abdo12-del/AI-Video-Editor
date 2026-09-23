@@ -21,6 +21,11 @@ describe('Arabic and English edit command parsing', () => {
     expect(parseAgentIntent('اجعل الفيديو أكثر احترافية')).toEqual({ type: 'smart-plan' })
   })
 
+  it('recognizes intro removal and keeps best-part requests available for Gemini analysis', () => {
+    expect(parseAgentIntent('قص المقدمة بعد تحليلك')).toEqual({ type: 'delete-intro' })
+    expect(parseAgentIntent('قص أفضل جزء لريل')).toEqual({ type: 'unknown' })
+  })
+
   it('supports common French editing commands as well as Arabic and English', () => {
     expect(parseAgentIntent('Supprime les silences de plus d’une seconde')).toEqual({ type: 'remove-silence', minimumDuration: 1 })
     expect(parseAgentIntent('Supprime les 10 premières secondes')).toEqual({ type: 'delete-range', start: 0, end: 10 })

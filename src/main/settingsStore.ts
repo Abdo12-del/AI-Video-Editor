@@ -12,21 +12,30 @@ const defaults: AppSettings = {
   whisperModelPath: ''
 }
 
+function discoverWhisperSettings(): Pick<AppSettings, 'whisperBinaryPath' | 'whisperModelPath'> {
+  const binaryPath = join(process.cwd(), 'tools', 'whisper', 'Release', 'whisper-cli.exe')
+  const modelPath = join(process.cwd(), 'tools', 'whisper', 'ggml-base.bin')
+  return existsSync(binaryPath) && existsSync(modelPath)
+    ? { whisperBinaryPath: binaryPath, whisperModelPath: modelPath }
+    : { whisperBinaryPath: '', whisperModelPath: '' }
+}
+
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
 export async function loadSettings(): Promise<AppSettings> {
   const path = settingsPath()
-  if (!existsSync(path)) return defaults
+  const discovered = discoverWhisperSettings()
+  if (!existsSync(path)) return { ...defaults, ...discovered }
   try {
     const parsed = JSON.parse(await readFile(path, 'utf8')) as Partial<AppSettings>
     return {
       language: parsed.language === 'en' || parsed.language === 'fr' ? parsed.language : 'ar',
       ollamaEnabled: Boolean(parsed.ollamaEnabled),
       ollamaModel: typeof parsed.ollamaModel === 'string' ? parsed.ollamaModel.slice(0, 120) : defaults.ollamaModel,
-      whisperBinaryPath: typeof parsed.whisperBinaryPath === 'string' ? parsed.whisperBinaryPath : '',
-      whisperModelPath: typeof parsed.whisperModelPath === 'string' ? parsed.whisperModelPath : ''
+      whisperBinaryPath: typeof parsed.whisperBinaryPath === 'string' && parsed.whisperBinaryPath ? parsed.whisperBinaryPath : discovered.whisperBinaryPath,
+      whisperModelPath: typeof parsed.whisperModelPath === 'string' && parsed.whisperModelPath ? parsed.whisperModelPath : discovered.whisperModelPath
     }
   } catch {
     return defaults

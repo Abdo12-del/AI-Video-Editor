@@ -1,4 +1,3 @@
-.analysis-progress-card{margin:8px 10px;padding:9px 10px;border:1px solid rgba(88,220,202,.3);border-radius:8px;background:rgba(33,70,72,.22)}.analysis-progress-heading{display:flex;align-items:center;justify-content:space-between;color:#b8c8d7;font-size:9px}.analysis-progress-heading span{display:flex;align-items:center;gap:6px}.analysis-progress-heading strong{color:var(--cyan);font:10px var(--mono)}.analysis-progress-track{height:5px;margin-top:8px;overflow:hidden;border-radius:5px;background:#263747}.analysis-progress-track i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .25s ease}.analysis-progress-card p{margin:7px 0 0;overflow:hidden;color:#8ea1b3;font-size:8px;text-overflow:ellipsis;white-space:nowrap}
 /* Dark, local-first editing workspace. All typography falls back to installed system fonts. */
 :root {
   color-scheme: dark;

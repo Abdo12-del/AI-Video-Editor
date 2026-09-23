@@ -1,6 +1,6 @@
 import type { GeminiConnectionErrorCode } from '../shared/types'
 
-export const GEMINI_MODEL = 'gemini-3.8-flash'
+export const GEMINI_MODEL = 'gemini-2.5-flash'
 
 export interface GeminiSchema {
   type: string
@@ -79,23 +79,32 @@ export async function generateGeminiTurn(
     body.toolConfig = { functionCallingConfig: { mode: 'AUTO' } }
   }
 
-  let response: Response
-  try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-goog-api-key': key
-      },
-      body: JSON.stringify(body),
-      signal: input.signal ?? AbortSignal.timeout(45_000)
-    })
-  } catch {
-    if (input.signal?.aborted && (input.signal.reason as { name?: unknown } | undefined)?.name === 'AbortError') {
-      throw new Error('Operation cancelled by the user.')
+  let response: Response | undefined
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-goog-api-key': key
+        },
+        body: JSON.stringify(body),
+        signal: input.signal ?? AbortSignal.timeout(45_000)
+      })
+    } catch {
+      if (input.signal?.aborted && (input.signal.reason as { name?: unknown } | undefined)?.name === 'AbortError') {
+        throw new Error('Operation cancelled by the user.')
+      }
+      throw new GeminiProviderError('network')
     }
-    throw new GeminiProviderError('network')
+    const retryable = response.status === 429 || response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504
+    if (!retryable || attempt === 3) break
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 3_000 * (attempt + 1))
+      input.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('Operation cancelled by the user.')) }, { once: true })
+    })
   }
+  if (!response) throw new GeminiProviderError('network')
   if (!response.ok) throw new GeminiProviderError(codeForHttpStatus(response.status))
 
   let payload: unknown
