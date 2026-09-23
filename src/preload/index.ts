@@ -16,6 +16,7 @@ const desktop: DesktopBridge = {
   importAudio: () => ipcRenderer.invoke('media:import-audio'),
   relinkMedia: (mediaId) => ipcRenderer.invoke('media:relink', mediaId),
   analyze: (project, mediaIds, jobId) => ipcRenderer.invoke('project:analyze', project, mediaIds, jobId),
+  analyzeVisuals: (project, mediaId, jobId, consent) => ipcRenderer.invoke('media:analyze-visuals', project, mediaId, jobId, consent),
   transcribe: (project, mediaId, jobId) => ipcRenderer.invoke('media:transcribe', project, mediaId, jobId),
   chat: (project, text, jobId) => ipcRenderer.invoke('agent:chat', project, text, jobId),
   exportVideo: (request: ExportRequest, jobId) => ipcRenderer.invoke('export:render', request, jobId),

@@ -59,6 +59,7 @@ export async function generateGeminiTurn(
     systemInstruction: string
     contents: Array<Record<string, unknown>>
     functionDeclarations?: GeminiFunctionDeclaration[]
+    responseMimeType?: 'application/json'
     signal?: AbortSignal
   }
 ): Promise<GeminiTurn> {
@@ -68,7 +69,10 @@ export async function generateGeminiTurn(
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: input.systemInstruction }] },
     contents: input.contents,
-    generationConfig: { maxOutputTokens: 4096 }
+    generationConfig: {
+      maxOutputTokens: 4096,
+      ...(input.responseMimeType ? { responseMimeType: input.responseMimeType } : {})
+    }
   }
   if (input.functionDeclarations?.length) {
     body.tools = [{ functionDeclarations: input.functionDeclarations }]
@@ -87,6 +91,9 @@ export async function generateGeminiTurn(
       signal: input.signal ?? AbortSignal.timeout(45_000)
     })
   } catch {
+    if (input.signal?.aborted && (input.signal.reason as { name?: unknown } | undefined)?.name === 'AbortError') {
+      throw new Error('Operation cancelled by the user.')
+    }
     throw new GeminiProviderError('network')
   }
   if (!response.ok) throw new GeminiProviderError(codeForHttpStatus(response.status))

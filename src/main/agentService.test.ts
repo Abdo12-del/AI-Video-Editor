@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { AnalysisResult, AppSettings, MediaAsset, ProjectData } from '../shared/types'
+import type { AnalysisResult, AppSettings, MediaAsset, ProjectData, VisualIndex } from '../shared/types'
 import { addMediaToTimeline, createProject, getMusicClips } from '../shared/project'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -23,7 +23,7 @@ vi.mock('./geminiProvider', () => ({
 }))
 
 import { sendAgentMessage } from './agentService'
-import { getAgentToolDefinitions, registerAgentTool } from './agentToolRegistry'
+import { executeAgentTool, getAgentToolDefinitions, registerAgentTool } from './agentToolRegistry'
 
 afterEach(() => vi.clearAllMocks())
 
@@ -59,6 +59,56 @@ function textTurn(text: string) {
 }
 
 describe('Gemini editing agent loop', () => {
+  it('registers timestamped visual context and maps Timeline time back to source time without describing unindexed video', async () => {
+    let project = createTestProject(20)
+    const clip = project.timeline.clips[0]
+    project = {
+      ...project,
+      timeline: { ...project.timeline, clips: [{ ...clip, position: 5, sourceIn: 3, sourceOut: 20 }] }
+    }
+    const analyzedAt = new Date().toISOString()
+    const visualIndex: VisualIndex = {
+      provider: 'gemini', analyzedAt, sampleIntervalSeconds: 1, durationSeconds: 20, frameCount: 20,
+      summary: 'A presenter speaks to camera in a bright studio.',
+      shots: [{ index: 1, start: 0, end: 20, description: 'A presenter speaks to camera in a bright studio.' }],
+      moments: Array.from({ length: 20 }, (_, second) => ({
+        timestampSeconds: second, second, shotIndex: 1,
+        description: `A presenter speaks to camera at source second ${second}.`,
+        visibleText: second === 6 ? 'Studio update' : undefined
+      }))
+    }
+    const analysis: AnalysisResult = {
+      mediaId: 'media-1', analyzedAt, scenes: [{ start: 0, end: 20 }], silences: [], transcript: [],
+      audio: { clippingDetected: false, silenceCount: 0, analyzed: false },
+      quality: { width: 1920, height: 1080, fps: 30, videoCodec: 'h264', notes: [] }, warnings: [], visualIndex
+    }
+    project = { ...project, analysisByMedia: { ...project.analysisByMedia, 'media-1': analysis } }
+    mocks.generateGeminiTurn.mockResolvedValueOnce(textTurn('I can answer from the saved still-frame captions.'))
+
+    await sendAgentMessage(project, 'What is visible near eight seconds?', settings, 'visual-register-job', report, secretKey)
+
+    expect(getAgentToolDefinitions().map((tool) => tool.name)).toContain('get_visual_context')
+    const context = { project, settings, jobId: 'visual-query-job', report }
+    const point = await executeAgentTool('get_visual_context', { time_seconds: 8 }, context)
+    expect(point.result).toMatchObject({
+      available: true, mode: 'point', mediaName: 'Interview.mp4', timelineTimeSeconds: 8,
+      requestedSourceTimeSeconds: 6, nearestSampleTimeSeconds: 6
+    })
+    expect(JSON.stringify(point.result)).toContain('A presenter speaks to camera at source second 6.')
+    expect(JSON.stringify(point.result)).toContain('Studio update')
+
+    const range = await executeAgentTool('get_visual_context', { start_seconds: 7, end_seconds: 10 }, context)
+    expect(range.result).toMatchObject({ mode: 'timeline-range', timelineRangeSeconds: [7, 10] })
+    expect(JSON.stringify(range.result)).toContain('"sourceRangeSeconds":[5,8]')
+    expect(JSON.stringify(range.result)).toContain('"timelineTimeSeconds":7')
+    expect(JSON.stringify(range.result)).toContain('"timelineTimeSeconds":9')
+
+    const withoutIndex = createTestProject(20)
+    const missing = await executeAgentTool('get_visual_context', { media_id: 'media-1' }, { ...context, project: withoutIndex })
+    expect(missing.result).toMatchObject({ available: false })
+    expect(JSON.stringify(missing.result)).toContain('No visual index')
+  })
+
   it('lets Gemini choose sequential edits, returns each updated revision, and previews the final project', async () => {
     const project = createTestProject(20)
     mocks.generateGeminiTurn

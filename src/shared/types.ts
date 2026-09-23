@@ -91,6 +91,32 @@ export interface VideoQuality {
   notes: string[]
 }
 
+export interface VisualMoment {
+  timestampSeconds: number
+  second: number
+  shotIndex: number
+  description: string
+  visibleText?: string
+}
+
+export interface VisualShot {
+  index: number
+  start: number
+  end: number
+  description: string
+}
+
+export interface VisualIndex {
+  provider: 'gemini'
+  analyzedAt: string
+  sampleIntervalSeconds: 1
+  durationSeconds: number
+  frameCount: number
+  summary: string
+  shots: VisualShot[]
+  moments: VisualMoment[]
+}
+
 export interface AnalysisResult {
   mediaId: string
   analyzedAt: string
@@ -100,6 +126,7 @@ export interface AnalysisResult {
   audio: AudioMetrics
   quality: VideoQuality
   warnings: string[]
+  visualIndex?: VisualIndex
 }
 
 export interface ExportSettings {
@@ -256,6 +283,7 @@ export interface DesktopBridge {
   importAudio(): Promise<ImportResponse | null>
   relinkMedia(mediaId: string): Promise<MediaAsset | null>
   analyze(project: ProjectData, mediaIds: string[], jobId: string): Promise<AnalysisResponse>
+  analyzeVisuals(project: ProjectData, mediaId: string, jobId: string, consent: boolean): Promise<ProjectData>
   transcribe(project: ProjectData, mediaId: string, jobId: string): Promise<TranscriptSegment[]>
   chat(project: ProjectData, text: string, jobId: string): Promise<ChatResponse>
   exportVideo(request: ExportRequest, jobId: string): Promise<ExportResponse | null>

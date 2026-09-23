@@ -375,7 +375,21 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .send-button:hover:not(:disabled){background:linear-gradient(135deg,#91a0ff,#aa83ff)}
 .plan-card{border-color:rgba(139,145,255,.24);background:linear-gradient(145deg,rgba(63,63,111,.28),rgba(28,36,52,.68))}
 .plan-card-head{color:#aaa3ff}
+.assistant-title-row .assistant-title-actions{min-width:0;margin-inline-start:auto;display:flex;align-items:center;gap:3px;flex:none}
+.assistant-title-row .assistant-title-actions .icon-button{width:27px;height:27px;margin-inline-start:0}
+.assistant-title-row .assistant-title-actions .assistant-visual-action{border-color:rgba(139,145,255,.22);background:rgba(139,145,255,.07);color:#aaa8ff}
+.assistant-title-row .assistant-title-actions .assistant-visual-action:hover:not(:disabled){border-color:rgba(139,145,255,.45);background:rgba(139,145,255,.15);color:#d0ceff}
+.visual-index-status{margin:4px 9px 0;padding:5px 7px;display:flex;align-items:center;gap:6px;overflow:hidden;border:1px solid rgba(139,145,255,.18);border-radius:6px;background:rgba(98,91,181,.08);color:#aaa8ff;font-size:7px;line-height:1.45}
+.visual-index-status svg{flex:none}
+.visual-index-status.visual-index-missing{border-color:rgba(133,151,174,.14);background:rgba(111,127,148,.06);color:#8595a8}
+.visual-index-status span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.visual-consent-body p{margin:0 0 12px;color:#c1ccda;font-size:10px;line-height:1.75}
+.visual-consent-estimate{margin:8px 0 12px;padding:9px;display:flex;align-items:flex-start;gap:8px;border:1px solid rgba(139,145,255,.24);border-radius:8px;background:rgba(98,91,181,.08);color:#aaa8ff;font-size:9px;line-height:1.6;overflow-wrap:anywhere}
+.visual-consent-estimate svg{flex:none;margin-top:1px}
+.visual-consent-body .modal-actions{margin-top:14px}
 @media(max-height:800px){
+  .assistant-lower-panel>.visual-index-status{margin-block:2px 0;padding-block:4px}
+
   .context-inspector{flex-basis:39%;min-height:145px}
   .assistant-lower-panel{flex-basis:61%}
   .assistant-lower-panel>.assistant-tabs{height:34px;min-height:34px}

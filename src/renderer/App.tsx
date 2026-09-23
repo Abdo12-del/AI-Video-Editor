@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   Activity, AudioLines, Bot, Captions, Check, ChevronDown, CircleAlert, Clapperboard, Clock3,
-  Download, FileText, Film, FolderOpen, Gauge, HardDrive, History, Languages, LoaderCircle, Maximize,
+  Download, Eye, FileText, Film, FolderOpen, Gauge, HardDrive, History, Languages, LoaderCircle, Maximize,
   ChevronRight, CircleHelp, FileAudio, FileVideo, Keyboard, Layers, LayoutGrid, List, Pause, PanelLeftClose, PanelRightClose,
-  Play, Plus, Redo2, Search, Send, Settings2, Scissors, Music2, VolumeX, Sparkles, Subtitles, TextCursorInput, Trash2, Undo2,
+  Play, Plus, Redo2, RefreshCw, Search, Send, Settings2, Scissors, Music2, VolumeX, Sparkles, Subtitles, TextCursorInput, Trash2, Undo2,
   Upload, Volume2, WandSparkles, Waves, X, ZoomIn, ZoomOut
 } from 'lucide-react'
 import type {
@@ -134,6 +134,7 @@ export default function App() {
   const [chatError, setChatError] = useState('')
   const [pendingPlan, setPendingPlan] = useState<NonNullable<Awaited<ReturnType<typeof window.desktop.chat>>['proposal']> | null>(null)
   const [showExport, setShowExport] = useState(false)
+  const [visualConsentMediaId, setVisualConsentMediaId] = useState<string | null>(null)
   const [transcriptSearch, setTranscriptSearch] = useState('')
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [exportSettings, setExportSettings] = useState<ExportSettings | null>(null)
@@ -218,6 +219,7 @@ export default function App() {
   const selectedClip = useMemo(() => selectedMusicClipId ? undefined : videoClips.find((clip) => clip.id === selectedClipId) ?? videoClips[0], [videoClips, selectedClipId, selectedMusicClipId])
   const activeClip = useMemo(() => project ? getClipAtTime(project, playhead) ?? (playhead >= duration && duration > 0 ? videoClips.at(-1) : videoClips[0]) : undefined, [project, playhead, duration, videoClips])
   const activeAsset = project?.media.find((asset) => asset.id === activeClip?.mediaId)
+  const visualConsentAsset = project?.media.find((asset) => asset.id === visualConsentMediaId)
   const selectedAsset = project?.media.find((asset) => asset.id === selectedClip?.mediaId)
   const selectedMusicAsset = project?.media.find((asset) => asset.id === selectedMusicClip?.mediaId)
   const embeddedAudioMuted = project?.timeline.tracks.find((track) => track.id === AUDIO_TRACK_ID)?.muted ?? false
@@ -864,6 +866,39 @@ export default function App() {
     setShowExport(true)
   }
 
+  const requestVisualAnalysis = () => {
+    if (uiLocked) { showToast(t('waitForJob')); return }
+    if (!project || !activeAsset || activeAsset.width <= 0 || activeAsset.height <= 0) { showToast(t('visualNeedVideo')); return }
+    if (activeAsset.missing) { showToast(t('sourceMissing')); return }
+    if (mediaRuntime && !mediaRuntime.ready) { showToast(t('mediaRuntimeUnavailable')); return }
+    if (!geminiReady) { setShowSettings(true); return }
+    setVisualConsentMediaId(activeAsset.id)
+  }
+
+  const confirmVisualAnalysis = async () => {
+    if (!project || !window.desktop || !visualConsentMediaId || uiLocked) return
+    const mediaId = visualConsentMediaId
+    const asset = project.media.find((item) => item.id === mediaId)
+    if (!asset || asset.width <= 0 || asset.height <= 0) { setVisualConsentMediaId(null); showToast(t('visualNeedVideo')); return }
+    if (asset.missing) { setVisualConsentMediaId(null); showToast(t('sourceMissing')); return }
+    const jobId = makeId()
+    jobIdRef.current = jobId
+    setVisualConsentMediaId(null)
+    setBusy(true)
+    setActiveJob({ jobId, kind: 'analysis', progress: 0, message: t('visualAnalyze'), status: 'running', startedAt: Date.now() })
+    try {
+      const updated = await window.desktop.analyzeVisuals(project, mediaId, jobId, true)
+      setProject(updated)
+      const visual = updated.analysisByMedia[mediaId]?.visualIndex
+      if (visual) showToast(t('visualIndexSuccess').replace('{frames}', String(visual.frameCount)).replace('{shots}', String(visual.shots.length)))
+    } catch (error) {
+      markJobFailure(jobId, error)
+      const errorMessage = String(error)
+      const geminiCode = errorMessage.match(/Gemini request failed \((missing-key|storage-unavailable|invalid-key|rate-limited|service-unavailable|request-rejected|network|blocked|unknown)\)/)?.[1] as GeminiConnectionErrorCode | undefined
+      showToast(errorMessage.toLowerCase().includes('cancel') ? t('visualAnalysisCancelled') : geminiCode ? t(geminiErrorTranslationKey(geminiCode)) : t('visualAnalysisFailed'))
+    } finally { setBusy(false) }
+  }
+
   const executeMenuAction = (action: string) => {
     setOpenMenu(null)
     if (uiLocked && ['new', 'open', 'import-video', 'import-audio', 'delete', 'split', 'analyze'].includes(action)) {
@@ -1318,8 +1353,9 @@ export default function App() {
           <button className={rightTab === 'history' ? 'active' : ''} type="button" role="tab" aria-selected={rightTab === 'history'} onClick={() => setRightTab('history')}><History size={14} />{t('history')}</button>
         </div>
         {rightTab === 'assistant' ? <>
-          <div className="assistant-title-row"><div className="assistant-avatar"><WandSparkles size={18} /></div><div><strong>{t('assistant')}</strong><span><i className="status-dot" />{geminiReady ? t('geminiProviderName') : t('geminiSetupNeeded')}</span></div><button className="icon-button" type="button" title={t('settings')} onClick={() => setShowSettings(true)}><Settings2 size={15} /></button></div>
+          <div className="assistant-title-row"><div className="assistant-avatar"><WandSparkles size={18} /></div><div><strong>{t('assistant')}</strong><span><i className="status-dot" />{geminiReady ? t('geminiProviderName') : t('geminiSetupNeeded')}</span></div><div className="assistant-title-actions"><button className="icon-button assistant-visual-action" type="button" title={t(analysis?.visualIndex ? 'visualReanalyze' : 'visualAnalyze')} aria-label={t(analysis?.visualIndex ? 'visualReanalyze' : 'visualAnalyze')} onClick={requestVisualAnalysis} disabled={uiLocked || !activeAsset || activeAsset.missing || activeAsset.width <= 0 || activeAsset.height <= 0}>{analysis?.visualIndex ? <RefreshCw size={14} /> : <Eye size={15} />}</button><button className="icon-button" type="button" title={t('settings')} aria-label={t('settings')} onClick={() => setShowSettings(true)}><Settings2 size={15} /></button></div></div>
           <div className="privacy-callout"><HardDrive size={14} /><span>{t('assistantPrivacy')}</span></div>
+          <div className={`visual-index-status${analysis?.visualIndex ? '' : ' visual-index-missing'}`} title={analysis?.visualIndex?.summary ?? t(activeAsset ? 'visualIndexMissing' : 'visualNeedVideo')}><Eye size={12} /><span>{analysis?.visualIndex ? t('visualIndexReady').replace('{frames}', String(analysis.visualIndex.frameCount)).replace('{shots}', String(analysis.visualIndex.shots.length)) : t(activeAsset ? 'visualIndexMissing' : 'visualNeedVideo')}</span></div>
           <div className="chat-messages" ref={chatScrollRef}>
             {project.chatMessages.length === 0 ? <div className="chat-welcome"><div className="chat-welcome-icon"><Bot size={22} /></div><span className="chat-label">{t('localAgent')}</span><p>{t('assistantWelcome')}</p><div className="suggestion-list">
               <button type="button" disabled={uiLocked} onClick={() => void sendChat(undefined, t('promptRemoveSilence'))}><Waves size={14} />{t('suggestionRemoveSilence')}<span>↗</span></button>
@@ -1347,6 +1383,13 @@ export default function App() {
         <p className="modal-note"><HardDrive size={15} /> {t('chooseFolder')}. Source media remains in its original location.</p>
         <div className="modal-actions"><button className="button button-quiet" type="button" onClick={() => setShowCreate(false)}>{t('cancel')}</button><button className="button button-primary" type="submit" disabled={busy}><Plus size={16} />{t('create')}</button></div>
       </form>
+    </Modal>}
+    {visualConsentAsset && <Modal title={t('visualConsentTitle')} onClose={() => setVisualConsentMediaId(null)}>
+      <div className="visual-consent-body">
+        <p>{t('visualConsentBody')}</p>
+        <div className="visual-consent-estimate"><Eye size={15} /><span>{t('visualConsentEstimate').replace('{name}', visualConsentAsset.name).replace('{seconds}', visualConsentAsset.duration.toFixed(1)).replace('{frames}', String(Math.ceil(visualConsentAsset.duration)))}</span></div>
+        <div className="modal-actions"><button className="button button-quiet" type="button" onClick={() => setVisualConsentMediaId(null)}>{t('cancel')}</button><button className="button button-primary" type="button" onClick={() => void confirmVisualAnalysis()} disabled={uiLocked}><Eye size={15} />{t('visualConsentConfirm')}</button></div>
+      </div>
     </Modal>}
     {showSettings && <SettingsModal settings={settings} t={t} onClose={() => setShowSettings(false)} onSave={applySettings} saved={settingsSaved} onGeminiStatusChange={setGeminiKeyStatus} />}
     {showExport && <ExportModal project={project} value={exportSettings ?? project.exportSettings} duration={duration} t={t} onChange={setExportField} onClose={() => setShowExport(false)} onExport={() => void doExport()} busy={activeJob?.kind === 'export' && activeJob.status === 'running'} locked={uiLocked} />}

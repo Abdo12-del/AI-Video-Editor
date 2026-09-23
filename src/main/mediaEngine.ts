@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { app } from 'electron'
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { writeLog } from './logger'
@@ -38,6 +38,7 @@ interface RunOptions {
 
 const activeProcesses = new Map<string, ChildProcessWithoutNullStreams>()
 const cancelledJobs = new Set<string>()
+const cancellationHandlers = new Map<string, Set<() => void>>()
 const MAX_CAPTURE = 10_000_000
 
 type MediaBinaryName = 'ffmpeg' | 'ffprobe'
@@ -190,14 +191,36 @@ function runCommand(command: string, args: string[], options: RunOptions = {}): 
 
 export function cancelMediaJob(jobId: string): void {
   cancelledJobs.add(jobId)
+  for (const handler of cancellationHandlers.get(jobId) ?? []) {
+    try { handler() } catch { /* Cancellation is best effort; continue to stop the active media process. */ }
+  }
   const child = activeProcesses.get(jobId)
   if (child) child.kill('SIGTERM')
+}
+
+export function registerMediaJobCancellation(jobId: string, handler: () => void): () => void {
+  if (cancelledJobs.has(jobId)) {
+    handler()
+    return () => undefined
+  }
+  const handlers = cancellationHandlers.get(jobId) ?? new Set<() => void>()
+  handlers.add(handler)
+  cancellationHandlers.set(jobId, handlers)
+  return () => {
+    handlers.delete(handler)
+    if (!handlers.size) cancellationHandlers.delete(jobId)
+  }
 }
 
 export function consumeCancelledJob(jobId: string): boolean {
   const cancelled = cancelledJobs.has(jobId)
   cancelledJobs.delete(jobId)
+  cancellationHandlers.delete(jobId)
   return cancelled
+}
+
+export function ensureMediaJobActive(jobId: string): void {
+  throwIfCancelled(jobId)
 }
 
 function throwIfCancelled(jobId: string): void {
@@ -254,6 +277,45 @@ export async function createThumbnail(filePath: string, thumbnailPath: string, t
     await rm(thumbnailPath, { force: true })
     throw error
   }
+}
+
+export async function extractVisualFramesPerSecond(asset: MediaAsset, outputDirectory: string, jobId: string, onProgress?: (percent: number) => void): Promise<string[]> {
+  if (!existsSync(asset.filePath)) throw new Error(`${asset.name} is missing. Relink the source before visual analysis.`)
+  if (asset.width <= 0 || asset.height <= 0 || asset.duration <= 0) throw new Error('Visual analysis requires a video source with a readable duration.')
+  await mkdir(outputDirectory, { recursive: true })
+  const framePattern = join(outputDirectory, 'frame-%06d.jpg')
+  let progressBuffer = ''
+  await runCommand(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-nostats', '-y', '-i', asset.filePath,
+    '-map', '0:v:0', '-an', '-vf', 'fps=1,scale=512:-2:flags=fast_bilinear',
+    '-q:v', '8', '-start_number', '0', '-progress', 'pipe:1', framePattern
+  ], {
+    jobId,
+    timeoutMs: Math.max(60_000, asset.duration * 3_000),
+    onStdout: (chunk) => {
+      progressBuffer += chunk
+      const values = [...progressBuffer.matchAll(/out_time_ms=(\d+)/g)]
+      const latest = values.at(-1)?.[1]
+      if (latest) onProgress?.(Math.max(0, Math.min(100, Number(latest) / 1_000_000 / asset.duration * 100)))
+      progressBuffer = progressBuffer.slice(-2000)
+    }
+  })
+  const files = (await readdir(outputDirectory))
+    .filter((name) => /^frame-\d{6}\.jpg$/i.test(name))
+    .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))
+    .map((name) => join(outputDirectory, name))
+  if (!files.length) throw new Error('FFmpeg could not extract any still frames from this video.')
+  return files
+}
+
+export async function extractVisualFrameAt(asset: MediaAsset, timeSeconds: number, outputPath: string, jobId: string): Promise<void> {
+  if (!Number.isFinite(timeSeconds) || timeSeconds < 0 || timeSeconds >= asset.duration) throw new Error('Frame timestamp must fall inside the source video.')
+  await mkdir(dirname(outputPath), { recursive: true })
+  await runCommand(getFfmpegPath(), [
+    '-hide_banner', '-loglevel', 'error', '-y', '-ss', timeSeconds.toFixed(3), '-i', asset.filePath,
+    '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=512:-2:flags=fast_bilinear', '-q:v', '8', outputPath
+  ], { jobId, timeoutMs: 40_000 })
+  if (!existsSync(outputPath)) throw new Error(`FFmpeg did not produce a still frame at ${timeSeconds.toFixed(2)} seconds.`)
 }
 
 export async function createWaveform(filePath: string, waveformPath: string): Promise<void> {

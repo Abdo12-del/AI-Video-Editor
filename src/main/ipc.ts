@@ -16,6 +16,7 @@ import {
 } from './projectStore'
 import { loadSettings, saveSettings } from './settingsStore'
 import { sendAgentMessage } from './agentService'
+import { analyzeVideoVisuals } from './videoUnderstanding'
 import { clearGeminiApiKey, getGeminiApiKey, getGeminiApiKeyStatus, saveGeminiApiKey } from './geminiKeyStore'
 import { GeminiProviderError, testGeminiApiKey } from './geminiProvider'
 import type { AnalysisResponse, AppSettings, ExportRequest, ExportSettings, GeminiConnectionErrorCode, JobKind, JobProgress, MediaRuntimeStatus, ProjectData } from '../shared/types'
@@ -97,7 +98,8 @@ export function registerIpcHandlers(initialMediaRuntime: MediaRuntimeStatus): vo
           const progress = (index / assets.length) * 100 + (local / assets.length)
           sendProgress(event, jobId, kind ?? 'analysis', progress, `${asset.name}: ${message}`)
         })
-        analysisByMedia[asset.id] = result
+        const previousVisualIndex = project.analysisByMedia[asset.id]?.visualIndex
+        analysisByMedia[asset.id] = previousVisualIndex ? { ...result, visualIndex: previousVisualIndex } : result
         warnings.push(...result.warnings.map((warning) => `${asset.name}: ${warning}`))
       }
       const latest = assertProjectOpen()
@@ -109,6 +111,48 @@ export function registerIpcHandlers(initialMediaRuntime: MediaRuntimeStatus): vo
     } catch (error) {
       const message = reportJobFailure(event, jobId, 'analysis', error)
       if (!message.includes('cancel')) await writeLog('error', 'analysis_job_failed', { projectId: project.id, jobId, error: message })
+      throw error
+    }
+  })
+
+  ipcMain.handle('media:analyze-visuals', async (event, input: ProjectData, mediaId: string, jobId: string, consent: boolean): Promise<ProjectData> => {
+    if (consent !== true) throw new Error('Explicit user confirmation is required before any visual frames can be sent to Gemini.')
+    const active = assertProjectOpen()
+    const project = normalizeIncomingProject(input)
+    if (project.id !== active.id) throw new Error('The requested project is not active.')
+    const asset = project.media.find((item) => item.id === String(mediaId))
+    if (!asset) throw new Error('Select a video source from the active project first.')
+    if (asset.width <= 0 || asset.height <= 0) throw new Error('Visual understanding is only available for video sources.')
+    try {
+      const [settings, apiKey] = await Promise.all([loadSettings(), getGeminiApiKey()])
+      if (!apiKey) throw new Error('Save a Gemini API key in Settings before requesting visual analysis.')
+      let analysis = project.analysisByMedia[asset.id]
+      if (!analysis?.scenes.length) {
+        analysis = await analyzeMedia(asset, active.rootPath, settings, jobId, (progress, message, kind) => {
+          sendProgress(event, jobId, kind ?? 'analysis', progress * 0.12, `${asset.name}: ${message}`)
+        })
+      }
+      const visualIndex = await analyzeVideoVisuals(asset, analysis.scenes, active.rootPath, apiKey, settings.language, jobId, (progress, message) => {
+        sendProgress(event, jobId, 'analysis', 12 + progress * 0.87, `${asset.name}: ${message}`)
+      })
+      const latest = assertProjectOpen()
+      if (latest.id !== project.id) throw new Error('The active project changed while visual analysis was running.')
+      const latestAnalysis = latest.analysisByMedia[asset.id] ?? analysis
+      const updated = {
+        ...latest,
+        analysisByMedia: {
+          ...latest.analysisByMedia,
+          [asset.id]: { ...latestAnalysis, visualIndex }
+        },
+        updatedAt: new Date().toISOString()
+      }
+      await saveActiveProject(updated)
+      await writeLog('info', 'visual_analysis_completed', { projectId: project.id, mediaId: asset.id, frames: visualIndex.frameCount, shots: visualIndex.shots.length })
+      sendProgress(event, jobId, 'analysis', 100, 'Visual analysis complete', 'completed')
+      return updated
+    } catch (error) {
+      const message = reportJobFailure(event, jobId, 'analysis', error)
+      if (!message.toLowerCase().includes('cancel')) await writeLog('error', 'visual_analysis_failed', { projectId: project.id, mediaId: asset.id, error: message })
       throw error
     }
   })

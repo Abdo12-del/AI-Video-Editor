@@ -37,6 +37,20 @@ describe('Gemini generateContent client', () => {
     expect(result.functionCalls).toEqual([{ id: 'call-1', name: 'get_timeline', args: { track_id: 'track-video' } }])
   })
 
+  it('sets JSON response mode when the visual caption caller requests structured output', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { role: 'model', parts: [{ text: '{"frames":[]}' }] } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const key = 'test-only-not-a-google-key-do-not-use-123456789'
+
+    await generateGeminiTurn(key, { systemInstruction: 'Return JSON.', contents: [], responseMimeType: 'application/json' })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const body = JSON.parse(String(init.body)) as { generationConfig?: Record<string, unknown> }
+    expect(body.generationConfig?.responseMimeType).toBe('application/json')
+  })
+
   it('returns sanitized provider error codes instead of API response text', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'secret-key-echo' } }), { status: 403 })))
     const key = 'test-only-not-a-google-key-do-not-use-123456789'
@@ -44,6 +58,15 @@ describe('Gemini generateContent client', () => {
     expect(error).toMatchObject({ code: 'invalid-key' })
     expect(String(error)).not.toContain(key)
     expect(String(error)).not.toContain('secret-key-echo')
+  })
+
+  it('preserves an explicit visual-analysis cancellation instead of showing a network failure', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('AbortError')))
+    const key = 'test-only-not-a-google-key-do-not-use-123456789'
+
+    await expect(generateGeminiTurn(key, { systemInstruction: 'test', contents: [], signal: controller.signal })).rejects.toThrow('Operation cancelled by the user.')
   })
 
   it('rejects malformed key input without making a network request', async () => {
