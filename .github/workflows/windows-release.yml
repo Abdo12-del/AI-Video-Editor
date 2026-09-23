@@ -1,0 +1,52 @@
+name: Windows desktop release verification
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron.vite.config.ts'
+      - '.github/workflows/windows-release.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron.vite.config.ts'
+      - '.github/workflows/windows-release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-release:
+    name: Build, install, and verify on Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22.12
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies and platform binaries
+        run: npm ci
+
+      - name: Typecheck, unit tests, media integration, Windows packaging, and installed smoke test
+        run: npm run dist:win
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-video-editor-windows-x64
+          path: release/*Setup.exe
+          if-no-files-found: error
+          retention-days: 14
