@@ -593,6 +593,32 @@ export function addSubtitle(project: ProjectData, segment: Omit<TranscriptSegmen
   return addTranscriptSubtitles(project, [subtitle])
 }
 
+export function importSubtitles(
+  project: ProjectData,
+  segments: Array<{ start: number; end: number; text: string }>
+): { project: ProjectData; imported: number; skipped: number } {
+  const duration = projectDuration(project)
+  const locked = project.timeline.tracks.find((track) => track.id === SUBTITLE_TRACK_ID)?.locked ?? false
+  const valid: TranscriptSegment[] = []
+  let skipped = 0
+  for (const segment of segments) {
+    const text = segment.text.trim().slice(0, 500)
+    if (locked || !text || !Number.isFinite(segment.start) || !Number.isFinite(segment.end)
+      || segment.start < 0 || segment.end - segment.start < 0.08 || segment.end - segment.start > 30
+      || segment.end > duration + 0.001) {
+      skipped += 1
+      continue
+    }
+    valid.push({ id: makeId(), start: segment.start, end: segment.end, text })
+  }
+  if (!valid.length) return { project, imported: 0, skipped }
+  const next = commitEdit(project, 'Import subtitles', `Imported ${valid.length} subtitle(s) from file`, 'subtitle-import', (current) => ({
+    ...current,
+    subtitles: [...current.subtitles, ...valid].sort((left, right) => left.start - right.start || left.end - right.end)
+  }))
+  return { project: next, imported: valid.length, skipped }
+}
+
 export function updateSubtitle(
   project: ProjectData,
   subtitleId: string,

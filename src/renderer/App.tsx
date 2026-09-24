@@ -7,12 +7,12 @@ import {
   Upload, Volume2, WandSparkles, Waves, X, ZoomIn, ZoomOut
 } from 'lucide-react'
 import type {
-  AnalysisResult, AppSettings, AspectRatio, ChatMessage, ExportSettings, GeminiApiKeyStatus, GeminiConnectionErrorCode,
+  AnalysisResult, AppSettings, AspectRatio, ChatMessage, ConversationSnapshot, ConversationStep, ExportSettings, GeminiApiKeyStatus, GeminiConnectionErrorCode,
   JobProgress, MediaAsset, MediaRuntimeStatus, ProjectData, ResolutionPreset, TimelineClip, TranscriptSegment, UiLanguage, VideoCodec
 } from '../shared/types'
 import {
   addAudioToTimeline, addMediaToTimeline, addSubtitle, AUDIO_TRACK_ID, clipDuration, commitExportSettings, createShortFromRange, deleteSubtitle, deleteTimelineRange,
-  generateTimelineSubtitles, getClipAtTime, getMusicClips, getVideoClips, MUSIC_TRACK_ID, projectDuration, redoEdit, reorderClip,
+  generateTimelineSubtitles, getClipAtTime, getMusicClips, getVideoClips, importSubtitles, MUSIC_TRACK_ID, projectDuration, redoEdit, reorderClip,
   moveAudioClip, removeAudioClip, setAudioClipGain, setClipGain, setTrackMuted, splitClip, trimAudioClip, trimClip, undoEdit, updateSubtitle, makeId
 } from '../shared/project'
 import { translate } from './i18n'
@@ -133,6 +133,8 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [chatError, setChatError] = useState('')
   const [pendingPlan, setPendingPlan] = useState<NonNullable<Awaited<ReturnType<typeof window.desktop.chat>>['proposal']> | null>(null)
+  const [chatSteps, setChatSteps] = useState<ConversationStep[] | null>(null)
+  const [chatConversation, setChatConversation] = useState<ConversationSnapshot | null>(null)
   const [showExport, setShowExport] = useState(false)
   const [visualConsentMediaId, setVisualConsentMediaId] = useState<string | null>(null)
   const [transcriptSearch, setTranscriptSearch] = useState('')
@@ -216,7 +218,7 @@ export default function App() {
 
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [project?.chatMessages.length, busy, pendingPlan])
+  }, [project?.chatMessages.length, busy, pendingPlan, chatConversation, chatSteps])
 
   const videoClips = useMemo(() => project ? getVideoClips(project) : [], [project])
   const musicClips = useMemo(() => project ? getMusicClips(project) : [], [project])
@@ -729,6 +731,8 @@ export default function App() {
     setBusy(true)
     setChatError('')
     setPendingPlan(null)
+    setChatSteps(null)
+    setChatConversation(null)
     const userMessage = makeMessage('user', text)
     const withUser = { ...project, chatMessages: [...project.chatMessages, userMessage].slice(-500) }
     setProject(withUser)
@@ -743,6 +747,8 @@ export default function App() {
         chatMessages: [...withUser.chatMessages, assistantMessage].slice(-500)
       })
       if (response.proposal) setPendingPlan(response.proposal)
+      setChatSteps(response.steps ?? null)
+      setChatConversation(response.conversation ?? null)
     } catch (error) {
       markJobFailure(jobId, error)
       const message = String(error)
@@ -847,6 +853,27 @@ export default function App() {
     updateProject(next)
     setSelectedSubtitleId(next.subtitles[0]?.id ?? null)
     return true
+  }
+
+  const importSubtitleFile = async () => {
+    if (!project || !window.desktop) return
+    if (uiLocked) { showToast(t('waitForJob')); return }
+    if (duration < 0.08) { showToast(t('subtitleNeedsVideo')); return }
+    try {
+      const result = await window.desktop.importSubtitles()
+      if (!result) return
+      const { project: next, imported, skipped } = importSubtitles(project, result.segments)
+      const dropped = skipped + result.skipped
+      if (!imported) {
+        showToast(dropped ? t('subtitleImportEmpty') : t('subtitleImportFailed'))
+        return
+      }
+      updateProject(next)
+      setSelectedSubtitleId(next.subtitles[0]?.id ?? null)
+      showToast(t('subtitlesImported').replace('{count}', String(imported)).replace('{skipped}', String(dropped)))
+    } catch (error) {
+      showToast(`${t('subtitleImportFailed')} ${String(error)}`.slice(0, 300))
+    }
   }
 
   const addCaptions = () => {
@@ -1382,11 +1409,15 @@ export default function App() {
             {chatError && <div className="chat-error"><CircleAlert size={14} />{chatError}</div>}
             {pendingPlan && <div className="plan-card"><div className="plan-card-head"><span><WandSparkles size={15} />{t('planReady')}</span><button type="button" onClick={() => setPendingPlan(null)}><X size={14} /></button></div><strong>{pendingPlan.title}</strong><p>{pendingPlan.summary}</p><pre>{pendingPlan.description}</pre><div className="plan-actions"><button type="button" className="button button-primary" onClick={() => void applyProposal()} disabled={!pendingPlan.action}><Check size={14} />{t('applyPlan')}</button><button type="button" className="button button-quiet" onClick={() => setPendingPlan(null)}>{t('dismissPlan')}</button></div></div>}
           </div>
+          {(chatSteps?.length || chatConversation?.hasPendingAction || chatConversation?.waitingForInput) ? <div className="chat-status-panel">
+            {chatSteps?.length ? <div className="chat-steps" title={t('chatProgress')}>{chatSteps.map((step) => <span key={step.id} className={`chat-step chat-step-${step.state}`}><i />{step.label}</span>)}</div> : null}
+            {chatConversation?.hasPendingAction ? <div className="chat-approval"><span className="chat-approval-chip"><Clock3 size={13} />{t('chatWaitingApproval')}</span><div className="chat-quick-replies"><button type="button" className="button button-primary" disabled={uiLocked} onClick={() => void sendChat(undefined, t('chatYes'))}><Check size={14} />{t('chatYes')}</button><button type="button" className="button button-quiet" disabled={uiLocked} onClick={() => void sendChat(undefined, t('chatNo'))}><X size={14} />{t('chatNo')}</button></div></div> : chatConversation?.waitingForInput ? <div className="chat-approval"><span className="chat-approval-chip"><Clock3 size={13} />{t('chatWaitingInput')}</span></div> : null}
+          </div> : null}
           <form className="chat-composer" onSubmit={(event) => void sendChat(event)}>
             <textarea value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendChat() } }} placeholder={t('askAnything')} rows={2} disabled={uiLocked} />
             <div className="composer-toolbar"><span><span className="composer-dot" />{geminiReady ? t('geminiProviderName') : t('geminiSetupNeeded')}</span><button className="send-button" type="submit" disabled={!chatDraft.trim() || uiLocked} title={t('send')}>{busy ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div>
           </form>
-        </> : rightTab === 'transcript' ? <TranscriptPanel activeAsset={activeAsset} analysis={analysis} search={transcriptSearch} setSearch={setTranscriptSearch} t={t} analyzing={activeJob?.kind === 'analysis' && activeJob.status === 'running'} analysisProgress={activeJob} onAnalyze={() => void runAnalysis(project, activeAsset ? [activeAsset.id] : undefined)} onSetup={() => setShowSettings(true)} onSeek={handleTranscriptSeek} onCaptions={addCaptions} /> : rightTab === 'subtitles' ? <SubtitleEditorPanel subtitles={project.subtitles} selected={selectedSubtitle} duration={duration} t={t} disabled={uiLocked} onAdd={addManualSubtitle} onSelect={selectSubtitle} onSave={saveSubtitle} onDelete={removeSubtitle} /> : <HistoryPanel project={project} t={t} />}
+        </> : rightTab === 'transcript' ? <TranscriptPanel activeAsset={activeAsset} analysis={analysis} search={transcriptSearch} setSearch={setTranscriptSearch} t={t} analyzing={activeJob?.kind === 'analysis' && activeJob.status === 'running'} analysisProgress={activeJob} onAnalyze={() => void runAnalysis(project, activeAsset ? [activeAsset.id] : undefined)} onSetup={() => setShowSettings(true)} onSeek={handleTranscriptSeek} onCaptions={addCaptions} /> : rightTab === 'subtitles' ? <SubtitleEditorPanel subtitles={project.subtitles} selected={selectedSubtitle} duration={duration} t={t} disabled={uiLocked} onAdd={addManualSubtitle} onSelect={selectSubtitle} onSave={saveSubtitle} onDelete={removeSubtitle} onImport={() => void importSubtitleFile()} /> : <HistoryPanel project={project} t={t} />}
         </div>
       </aside>
     </div>
@@ -1460,9 +1491,9 @@ function TranscriptPanel({ activeAsset, analysis, search, setSearch, t, analyzin
   </div>
 }
 
-function SubtitleEditorPanel({ subtitles, selected, duration, t, disabled, onAdd, onSelect, onSave, onDelete }: {
+function SubtitleEditorPanel({ subtitles, selected, duration, t, disabled, onAdd, onSelect, onSave, onDelete, onImport }: {
   subtitles: TranscriptSegment[]; selected?: TranscriptSegment; duration: number; t: (key: string) => string; disabled: boolean
-  onAdd: () => void; onSelect: (id: string) => void; onSave: (id: string, changes: Pick<TranscriptSegment, 'text' | 'start' | 'end'>) => boolean; onDelete: (id: string) => boolean
+  onAdd: () => void; onSelect: (id: string) => void; onSave: (id: string, changes: Pick<TranscriptSegment, 'text' | 'start' | 'end'>) => boolean; onDelete: (id: string) => boolean; onImport: () => void
 }) {
   const [text, setText] = useState(selected?.text ?? '')
   const [start, setStart] = useState(selected ? String(selected.start) : '')
@@ -1494,7 +1525,7 @@ function SubtitleEditorPanel({ subtitles, selected, duration, t, disabled, onAdd
     if (selected && !disabled && onDelete(selected.id)) setError('')
   }
   return <div className="subtitle-editor-panel">
-    <div className="side-heading"><div><span className="section-kicker">{t('subtitlesTrack')}</span><h2>{t('subtitleEditor')}</h2></div><button className="icon-button" type="button" title={t('addSubtitle')} aria-label={t('addSubtitle')} onClick={onAdd} disabled={disabled || duration < 0.08}><Plus size={16} /></button></div>
+    <div className="side-heading"><div><span className="section-kicker">{t('subtitlesTrack')}</span><h2>{t('subtitleEditor')}</h2></div><div className="assistant-title-actions"><button className="icon-button" type="button" title={t('importSubtitles')} aria-label={t('importSubtitles')} onClick={onImport} disabled={disabled || duration < 0.08}><Upload size={16} /></button><button className="icon-button" type="button" title={t('addSubtitle')} aria-label={t('addSubtitle')} onClick={onAdd} disabled={disabled || duration < 0.08}><Plus size={16} /></button></div></div>
     <div className="subtitle-editor-count">{t('subtitleCount').replace('{count}', String(subtitles.length))}<span>{formatTime(duration)}</span></div>
     <div className="subtitle-list">
       {ordered.length ? ordered.map((subtitle, index) => <button key={subtitle.id} type="button" className={`subtitle-list-row ${selected?.id === subtitle.id ? 'subtitle-list-row-selected' : ''}`} onClick={() => onSelect(subtitle.id)}>

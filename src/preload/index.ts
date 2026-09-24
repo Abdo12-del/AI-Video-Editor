@@ -14,6 +14,7 @@ const desktop: DesktopBridge = {
   saveProject: (project: ProjectData) => ipcRenderer.invoke('project:save', project),
   importMedia: () => ipcRenderer.invoke('media:import'),
   importAudio: () => ipcRenderer.invoke('media:import-audio'),
+  importSubtitles: () => ipcRenderer.invoke('subtitles:import'),
   relinkMedia: (mediaId) => ipcRenderer.invoke('media:relink', mediaId),
   analyze: (project, mediaIds, jobId) => ipcRenderer.invoke('project:analyze', project, mediaIds, jobId),
   analyzeVisuals: (project, mediaId, jobId, consent) => ipcRenderer.invoke('media:analyze-visuals', project, mediaId, jobId, consent),

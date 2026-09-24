@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addAudioToTimeline, addMediaToTimeline, addSubtitle, AUDIO_TRACK_ID, commitExportSettings, createProject, createShortFromRange, deleteSubtitle, deleteTimelineRange, getMusicClips, MUSIC_TRACK_ID, moveAudioClip, redoEdit, removeAudioClip, removeSilenceFromTimeline, reorderClip, setAudioClipGain, setTrackMuted, splitClip, trimAudioClip, trimClip, undoEdit, updateSubtitle } from './project'
+import { addAudioToTimeline, addMediaToTimeline, addSubtitle, AUDIO_TRACK_ID, commitExportSettings, createProject, createShortFromRange, deleteSubtitle, deleteTimelineRange, getMusicClips, importSubtitles, MUSIC_TRACK_ID, moveAudioClip, redoEdit, removeAudioClip, removeSilenceFromTimeline, reorderClip, setAudioClipGain, setTrackMuted, splitClip, trimAudioClip, trimClip, undoEdit, updateSubtitle } from './project'
 import type { AnalysisResult, MediaAsset } from './types'
 import { VIDEO_TRACK_ID } from './project'
 
@@ -85,6 +85,26 @@ describe('non-destructive timeline operations', () => {
     expect(deleted.subtitles).toHaveLength(0)
     expect(undoEdit(deleted).subtitles).toHaveLength(1)
     expect(redoEdit(undoEdit(deleted)).subtitles).toHaveLength(0)
+  })
+
+  it('imports subtitle files in one undoable edit with range validation', () => {
+    const project = seededProject()
+    const { project: next, imported, skipped } = importSubtitles(project, [
+      { start: 5, end: 6, text: 'Second' },
+      { start: 1, end: 2, text: 'First' },
+      { start: 21, end: 22, text: 'Outside the timeline' },
+      { start: 3, end: 3.02, text: 'Too short' },
+      { start: 4, end: 5, text: '   ' }
+    ])
+    expect(imported).toBe(2)
+    expect(skipped).toBe(3)
+    expect(next.subtitles.map((item) => item.text)).toEqual(['First', 'Second'])
+    expect(next.history.undo).toHaveLength(1)
+    expect(undoEdit(next).subtitles).toHaveLength(0)
+    expect(next.operations.at(-1)).toMatchObject({ kind: 'subtitle-import' })
+    const empty = importSubtitles(project, [{ start: 21, end: 22, text: 'Outside' }])
+    expect(empty.imported).toBe(0)
+    expect(empty.project).toBe(project)
   })
 
   it('extracts a Short range while retiming included music and subtitles in one undoable edit', () => {

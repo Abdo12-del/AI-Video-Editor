@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { MediaAsset, Scene, UiLanguage, VisualIndex, VisualMoment, VisualShot } from '../shared/types'
+import type { MediaAsset, Scene, SceneVisualProfile, UiLanguage, VisualIndex, VisualMoment, VisualShot } from '../shared/types'
+import { planSceneKeyframes } from '../shared/understanding'
 import { extractVisualFrameAt, extractVisualFramesPerSecond, ensureMediaJobActive, registerMediaJobCancellation, type ProgressReporter } from './mediaEngine'
 import { generateGeminiTurn } from './geminiProvider'
 
@@ -262,6 +263,198 @@ export async function analyzeVideoVisuals(
       shots: shotRecords,
       moments: captions.sort((a, b) => a.timestampSeconds - b.timestampSeconds || a.shotIndex - b.shotIndex)
     }
+  } finally {
+    unregisterCancellation()
+    if (outputDirectory) await rm(outputDirectory, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Structured scene-keyframe visual understanding.
+ *
+ * Abstraction for "what does each detected scene look like": callers
+ * work against VisualAnalyzer and never against a provider directly.
+ * Frames are sent only after the same explicit user confirmation that
+ * gates analyzeVideoVisuals; the NullVisualAnalyzer keeps every
+ * consumer honest when vision is unavailable or unapproved.
+ * ------------------------------------------------------------------ */
+
+export interface SceneKeyframeInput {
+  sceneIndex: number
+  start: number
+  end: number
+  timestampSeconds: number
+  imageBase64: string
+}
+
+export interface SceneVisualAnalysis {
+  sceneIndex: number
+  start: number
+  end: number
+  visualSummary: string
+  subjects: string[]
+  activity: string
+  hasPerson: boolean
+  hasOnScreenText: boolean
+  textOnScreen?: string
+  visualImportance: number
+}
+
+export interface VisualAnalyzer {
+  readonly provider: string
+  readonly available: boolean
+  analyzeKeyframes(frames: SceneKeyframeInput[], language: UiLanguage, signal: AbortSignal): Promise<SceneVisualAnalysis[]>
+}
+
+export class NullVisualAnalyzer implements VisualAnalyzer {
+  readonly provider = 'none'
+  readonly available = false
+
+  async analyzeKeyframes(_frames: SceneKeyframeInput[], _language: UiLanguage, _signal: AbortSignal): Promise<SceneVisualAnalysis[]> {
+    throw new Error('Visual analysis is not available. Selection used transcript, audio, and scene evidence only.')
+  }
+}
+
+const MAX_VISUAL_SUMMARY = 380
+const MAX_SUBJECT = 80
+const MAX_ACTIVITY = 200
+
+export class GeminiSceneVisualAnalyzer implements VisualAnalyzer {
+  readonly provider = 'gemini'
+
+  constructor(
+    private readonly apiKey: string,
+    private readonly generate: typeof generateGeminiTurn = generateGeminiTurn
+  ) {}
+
+  get available(): boolean {
+    return this.apiKey.trim().length >= 20
+  }
+
+  async analyzeKeyframes(frames: SceneKeyframeInput[], language: UiLanguage, signal: AbortSignal): Promise<SceneVisualAnalysis[]> {
+    if (!frames.length) return []
+    if (!this.available) throw new Error('Save a valid Gemini API key in Settings before visual analysis.')
+    const analyses: SceneVisualAnalysis[] = []
+    for (let offset = 0; offset < frames.length; offset += FRAMES_PER_REQUEST) {
+      signal.throwIfAborted()
+      analyses.push(...await this.requestBatch(frames.slice(offset, offset + FRAMES_PER_REQUEST), language, signal))
+    }
+    return analyses.sort((left, right) => left.sceneIndex - right.sceneIndex)
+  }
+
+  private async requestBatch(frames: SceneKeyframeInput[], language: UiLanguage, signal: AbortSignal): Promise<SceneVisualAnalysis[]> {
+    const parts: Array<Record<string, unknown>> = []
+    for (const frame of frames) {
+      parts.push({ text: `Scene ${frame.sceneIndex}; range ${frame.start.toFixed(2)}–${frame.end.toFixed(2)} seconds; keyframe at ${frame.timestampSeconds.toFixed(2)} seconds.` })
+      parts.push({ inlineData: { mimeType: 'image/jpeg', data: frame.imageBase64 } })
+    }
+    const responseLanguage = languageName(language)
+    const prompt = [
+      `Describe each supplied video keyframe in ${responseLanguage}. One keyframe represents one detected scene; never invent content from neighboring scenes.`,
+      'Return one JSON object only with this schema: {"scenes":[{"sceneIndex":1,"visualSummary":"two factual sentences: setting, visible people or objects, on-screen action","subjects":["dominant visible subjects"],"activity":"main visible activity or \\"static\\"","hasPerson":true,"hasOnScreenText":false,"textOnScreen":"","visualImportance":0.5}]}.',
+      'visualImportance is 0 to 1: how visually distinctive this scene is (clear subject, action, or change) relative to an ordinary talking frame. Describe only evidence visible in the still image. Do not identify real people, infer intent or emotion, infer audio, or claim motion. If uncertain, say so briefly.'
+    ].join('\n')
+    const response = await this.generate(this.apiKey, {
+      systemInstruction: 'You are a cautious video keyframe-analysis component. The user explicitly approved sending these low-resolution still images for this analysis. Describe visible evidence only and follow the requested JSON schema.',
+      contents: [{ role: 'user', parts: [{ text: prompt }, ...parts] }],
+      responseMimeType: 'application/json',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(90_000)])
+    })
+    if (response.functionCalls.length) throw new Error('Gemini returned a function call instead of scene descriptions. No scene visual profiles were saved; try again.')
+    const parsed = parseJsonObject(response.text)
+    const raw = Array.isArray(parsed.scenes) ? parsed.scenes : []
+    const byIndex = new Map(frames.map((frame) => [frame.sceneIndex, frame]))
+    const analyses = raw.flatMap((item): SceneVisualAnalysis[] => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+      const row = item as Record<string, unknown>
+      const sceneIndex = Number(row.sceneIndex)
+      const frame = byIndex.get(sceneIndex)
+      const visualSummary = cleanText(row.visualSummary, MAX_VISUAL_SUMMARY)
+      if (!Number.isInteger(sceneIndex) || !frame || !visualSummary) return []
+      const subjects = (Array.isArray(row.subjects) ? row.subjects : [])
+        .map((subject) => cleanText(subject, MAX_SUBJECT))
+        .filter(Boolean)
+        .slice(0, 8)
+      const importance = Number(row.visualImportance)
+      const textOnScreen = cleanText(row.textOnScreen, 160)
+      return [{
+        sceneIndex,
+        start: frame.start,
+        end: frame.end,
+        visualSummary,
+        subjects,
+        activity: cleanText(row.activity, MAX_ACTIVITY) || 'static',
+        hasPerson: row.hasPerson === true,
+        hasOnScreenText: row.hasOnScreenText === true || Boolean(textOnScreen),
+        ...(textOnScreen ? { textOnScreen } : {}),
+        visualImportance: Number.isFinite(importance) ? Math.max(0, Math.min(1, importance)) : 0.5
+      }]
+    })
+    const missing = frames.filter((frame) => !analyses.some((analysis) => analysis.sceneIndex === frame.sceneIndex))
+    if (missing.length) {
+      throw new Error(`Gemini did not describe every scene keyframe (${missing.length} scene(s) missing near scene ${missing[0].sceneIndex}). No scene visual profiles were saved; try again.`)
+    }
+    return analyses
+  }
+}
+
+export async function analyzeSceneKeyframes(
+  asset: MediaAsset,
+  scenesInput: Scene[],
+  projectRoot: string,
+  apiKey: string,
+  language: UiLanguage,
+  jobId: string,
+  report: ProgressReporter,
+  analyzer: VisualAnalyzer = new GeminiSceneVisualAnalyzer(apiKey)
+): Promise<SceneVisualProfile[]> {
+  void apiKey
+  if (asset.width <= 0 || asset.height <= 0) throw new Error('Choose a video clip before requesting visual understanding.')
+  if (!Number.isFinite(asset.duration) || asset.duration <= 0) throw new Error('The selected video has no readable duration.')
+  if (!analyzer.available) throw new Error('Visual analysis is not available. Save a Gemini API key and confirm visual analysis first.')
+  const scenes = scenesForAsset(asset, scenesInput)
+  const planned = planSceneKeyframes(scenes, 1)
+  if (!planned.length) throw new Error('No detected scenes are available for keyframe analysis.')
+  const controller = new AbortController()
+  const unregisterCancellation = registerMediaJobCancellation(jobId, () => controller.abort())
+  let outputDirectory: string | undefined
+  try {
+    await mkdir(join(projectRoot, 'cache'), { recursive: true })
+    outputDirectory = await mkdtemp(join(projectRoot, 'cache', 'scene-keyframes-'))
+    report(4, `Extracting ${planned.length} scene keyframe(s)…`, 'analysis')
+    const frames: SceneKeyframeInput[] = []
+    for (const [position, item] of planned.entries()) {
+      ensureMediaJobActive(jobId)
+      const scene = scenes[item.sceneIndex - 1]
+      const framePath = join(outputDirectory, `scene-${String(item.sceneIndex).padStart(4, '0')}.jpg`)
+      await extractVisualFrameAt(asset, Math.min(item.timestampSeconds, Math.max(0, asset.duration - 0.05)), framePath, jobId)
+      frames.push({
+        sceneIndex: item.sceneIndex,
+        start: Number(scene.start.toFixed(3)),
+        end: Number(scene.end.toFixed(3)),
+        timestampSeconds: item.timestampSeconds,
+        imageBase64: await readFile(framePath, 'base64')
+      })
+      report(4 + Math.round(((position + 1) / planned.length) * 30), `Extracted keyframe ${position + 1} of ${planned.length}`, 'analysis')
+    }
+    const analyses = await analyzer.analyzeKeyframes(frames, language, controller.signal)
+    ensureMediaJobActive(jobId)
+    const analyzedAt = new Date().toISOString()
+    return analyses.map((analysis) => ({
+      sceneIndex: analysis.sceneIndex,
+      start: analysis.start,
+      end: analysis.end,
+      keyframeTimestamp: Number(frames.find((frame) => frame.sceneIndex === analysis.sceneIndex)?.timestampSeconds.toFixed(3) ?? analysis.start),
+      visualSummary: analysis.visualSummary,
+      subjects: analysis.subjects,
+      activity: analysis.activity,
+      hasPerson: analysis.hasPerson,
+      hasOnScreenText: analysis.hasOnScreenText,
+      ...(analysis.textOnScreen ? { textOnScreen: analysis.textOnScreen } : {}),
+      visualImportance: analysis.visualImportance,
+      provider: 'gemini' as const,
+      analyzedAt
+    }))
   } finally {
     unregisterCancellation()
     if (outputDirectory) await rm(outputDirectory, { recursive: true, force: true }).catch(() => undefined)
