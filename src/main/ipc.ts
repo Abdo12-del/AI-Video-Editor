@@ -7,6 +7,7 @@ import {
   getActiveProject,
   getActiveProjectFile,
   importAudio,
+  importSubtitleFile,
   importVideos,
   normalizeIncomingProject,
   openExistingProject,
@@ -79,6 +80,7 @@ export function registerIpcHandlers(initialMediaRuntime: MediaRuntimeStatus): vo
   ipcMain.handle('project:save', async (_event, project: ProjectData) => saveActiveProject(project))
   ipcMain.handle('media:import', async (event) => importVideos(event))
   ipcMain.handle('media:import-audio', async (event) => importAudio(event))
+  ipcMain.handle('subtitles:import', async (event) => importSubtitleFile(event))
   ipcMain.handle('media:relink', async (event, mediaId: string) => relinkMissingMedia(event, String(mediaId)))
 
   ipcMain.handle('project:analyze', async (event, input: ProjectData, mediaIds: string[], jobId: string): Promise<AnalysisResponse> => {

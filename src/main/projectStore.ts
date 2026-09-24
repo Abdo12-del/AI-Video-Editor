@@ -6,6 +6,7 @@ import { BrowserWindow, dialog, type IpcMainInvokeEvent } from 'electron'
 import { createProject, MUSIC_TRACK_ID, VIDEO_TRACK_ID } from '../shared/project'
 import type { MediaAsset, ProjectData, TimelineClip } from '../shared/types'
 import { createThumbnail, createWaveform, probeMedia } from './mediaEngine'
+import { PlussubSubtitleParser, type ImportedSubtitle } from './subtitleImport'
 import { writeLog } from './logger'
 
 const projectFolders = ['media', 'cache', 'thumbnails', 'waveforms', 'transcripts', 'previews', 'exports']
@@ -349,6 +350,23 @@ export function importVideos(event: IpcMainInvokeEvent): Promise<{ assets: Media
 
 export function importAudio(event: IpcMainInvokeEvent): Promise<{ assets: MediaAsset[]; warnings: string[] } | null> {
   return importProjectMedia(event, 'audio')
+}
+
+export async function importSubtitleFile(event: IpcMainInvokeEvent): Promise<{ fileName: string; segments: ImportedSubtitle[]; skipped: number } | null> {
+  const parent = BrowserWindow.fromWebContents(event.sender)
+  const selection = await dialog.showOpenDialog(parent!, {
+    title: 'Import subtitles',
+    buttonLabel: 'Import',
+    properties: ['openFile'],
+    filters: [{ name: 'Subtitle files', extensions: ['srt', 'vtt'] }]
+  })
+  if (selection.canceled || !selection.filePaths[0]) return null
+  const filePath = selection.filePaths[0]
+  const fileName = basename(filePath)
+  const content = await readFile(filePath, 'utf8')
+  const { segments, skipped } = new PlussubSubtitleParser().parseFileContent(content, fileName)
+  await writeLog('info', 'subtitles_imported', { fileName, imported: segments.length, skipped })
+  return { fileName, segments, skipped }
 }
 
 export async function relinkMissingMedia(event: IpcMainInvokeEvent, mediaId: string): Promise<MediaAsset | null> {

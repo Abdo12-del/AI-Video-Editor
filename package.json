@@ -18,11 +18,13 @@
     "dist:win": "node scripts/verify-win-packaging.cjs && npm run typecheck && npm test && npm run test:media && npm run build && electron-builder --win nsis --x64 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-installed-windows.ps1"
   },
   "dependencies": {
+    "@plussub/srt-vtt-parser": "^2.0.5",
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "smartcrop": "^2.0.5"
   },
   "devDependencies": {
     "@types/node": "^22.18.6",

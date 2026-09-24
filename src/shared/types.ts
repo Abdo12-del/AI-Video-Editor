@@ -117,6 +117,23 @@ export interface VisualIndex {
   moments: VisualMoment[]
 }
 
+export interface SceneVisualProfile {
+  /** 1-based detected-scene index this keyframe analysis belongs to. */
+  sceneIndex: number
+  start: number
+  end: number
+  keyframeTimestamp: number
+  visualSummary: string
+  subjects: string[]
+  activity: string
+  hasPerson: boolean
+  hasOnScreenText: boolean
+  textOnScreen?: string
+  visualImportance: number
+  provider: 'gemini'
+  analyzedAt: string
+}
+
 export interface AnalysisResult {
   mediaId: string
   analyzedAt: string
@@ -127,6 +144,7 @@ export interface AnalysisResult {
   quality: VideoQuality
   warnings: string[]
   visualIndex?: VisualIndex
+  sceneVisuals?: SceneVisualProfile[]
 }
 
 export interface ExportSettings {
@@ -242,6 +260,21 @@ export interface MediaRuntimeStatus {
   ffprobe: MediaBinaryStatus
 }
 
+export interface ConversationStep {
+  id: string
+  /** Localized, user-friendly label (never raw tool names). */
+  label: string
+  state: 'done' | 'active' | 'pending' | 'failed'
+}
+
+export interface ConversationSnapshot {
+  status: string
+  hasPendingAction: boolean
+  waitingForInput: boolean
+  pendingQuestion?: string
+  focusLabel?: string
+}
+
 export interface ChatResponse {
   reply: string
   project: ProjectData
@@ -256,6 +289,10 @@ export interface ChatResponse {
       | { type: 'create-short'; start: number; end: number; aspectRatio: AspectRatio; baseUpdatedAt: string }
       | { type: 'open-export' }
   }
+  /** User-visible pipeline (understand → analyze → confirm → execute → update). */
+  steps?: ConversationStep[]
+  /** Lightweight conversation-state snapshot for the chat UI. */
+  conversation?: ConversationSnapshot
 }
 
 export interface ImportResponse {
@@ -281,6 +318,7 @@ export interface DesktopBridge {
   saveProject(project: ProjectData): Promise<{ ok: true }>
   importMedia(): Promise<ImportResponse | null>
   importAudio(): Promise<ImportResponse | null>
+  importSubtitles(): Promise<{ fileName: string; segments: Array<{ start: number; end: number; text: string }>; skipped: number } | null>
   relinkMedia(mediaId: string): Promise<MediaAsset | null>
   analyze(project: ProjectData, mediaIds: string[], jobId: string): Promise<AnalysisResponse>
   analyzeVisuals(project: ProjectData, mediaId: string, jobId: string, consent: boolean): Promise<ProjectData>

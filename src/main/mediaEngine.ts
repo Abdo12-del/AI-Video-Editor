@@ -23,6 +23,7 @@ import type {
   VideoQuality
 } from '../shared/types'
 import { AUDIO_TRACK_ID, clipDuration, getMusicClips, getVideoClips, MUSIC_TRACK_ID, projectDuration } from '../shared/project'
+import { cropFilterOffsets, planClipCropFractions, type RawFrame } from './cropPlanner'
 
 interface ProcessResult {
   stdout: string
@@ -326,6 +327,70 @@ export async function extractVisualFrameAt(asset: MediaAsset, timeSeconds: numbe
     }
   }
   throw new Error(`FFmpeg did not produce a still frame at ${timeSeconds.toFixed(2)} seconds.${lastError ? ` ${String(lastError)}` : ''}`)
+}
+
+/**
+ * Extracts one low-resolution RGBA frame for content-aware crop planning.
+ * Raw bytes (no JPEG round-trip) feed the crop adapter directly.
+ */
+export async function extractRawFrameAt(
+  asset: MediaAsset,
+  projectRoot: string,
+  timeSeconds: number,
+  width: number,
+  jobId: string
+): Promise<RawFrame> {
+  if (!Number.isFinite(timeSeconds) || timeSeconds < 0 || timeSeconds >= asset.duration) throw new Error('Frame timestamp must fall inside the source video.')
+  if (asset.width <= 0 || asset.height <= 0) throw new Error('Crop analysis needs a video source with readable dimensions.')
+  const frameWidth = Math.max(64, Math.min(640, Math.round(width / 2) * 2))
+  const frameHeight = Math.max(2, Math.round((asset.height * frameWidth) / asset.width / 2) * 2)
+  const rawPath = join(projectRoot, 'cache', `crop-${asset.id}-${randomUUID()}.raw`)
+  await mkdir(dirname(rawPath), { recursive: true })
+  try {
+    await runCommand(getFfmpegPath(), [
+      '-hide_banner', '-loglevel', 'error', '-y', '-ss', timeSeconds.toFixed(3), '-i', asset.filePath,
+      '-map', '0:v:0', '-an', '-sn', '-frames:v', '1', '-vf', `scale=${frameWidth}:${frameHeight}:flags=fast_bilinear`,
+      '-f', 'rawvideo', '-pix_fmt', 'rgba', rawPath
+    ], { jobId, timeoutMs: 40_000 })
+    const bytes = await readFile(rawPath)
+    if (bytes.length !== frameWidth * frameHeight * 4) throw new Error('FFmpeg produced a crop-analysis frame with unexpected dimensions.')
+    return { width: frameWidth, height: frameHeight, data: new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.length) }
+  } finally {
+    await rm(rawPath, { force: true })
+  }
+}
+
+/**
+ * Content-aware `crop=W:H:X:Y` for one timeline clip. Falls back to the
+ * centered crop (current behavior) whenever planning is unnecessary or fails.
+ */
+async function planClipCropFilter(
+  asset: MediaAsset,
+  projectRoot: string,
+  clipStart: number,
+  clipEnd: number,
+  targetWidth: number,
+  targetHeight: number,
+  jobId: string
+): Promise<string> {
+  const centered = `crop=${targetWidth}:${targetHeight}`
+  const aspectDiffers = Math.abs(asset.width / Math.max(1, asset.height) - targetWidth / Math.max(1, targetHeight)) > 0.01
+  if (!aspectDiffers) return centered
+  try {
+    const fractions = await planClipCropFractions(
+      (timeSeconds) => extractRawFrameAt(asset, projectRoot, timeSeconds, 480, jobId),
+      clipStart, clipEnd, targetWidth, targetHeight
+    )
+    if (!fractions) return centered
+    const scale = Math.max(targetWidth / asset.width, targetHeight / asset.height)
+    const scaledWidth = Math.round(asset.width * scale)
+    const scaledHeight = Math.round(asset.height * scale)
+    const { x, y } = cropFilterOffsets(fractions, scaledWidth, scaledHeight, targetWidth, targetHeight)
+    return `crop=${targetWidth}:${targetHeight}:${x}:${y}`
+  } catch (error) {
+    await writeLog('warn', 'smart_crop_fallback', { mediaId: asset.id, error: String(error) })
+    return centered
+  }
 }
 
 export async function createWaveform(filePath: string, waveformPath: string): Promise<void> {
@@ -746,7 +811,8 @@ export async function renderExport(
     const duration = safeNumber(clipDuration(clip))
     const videoLabel = `v${index}`
     const audioLabel = `a${index}`
-    filters.push(`[${inputIndex}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,format=yuv420p[${videoLabel}]`)
+    const cropFilter = await planClipCropFilter(asset, project.rootPath, clip.sourceIn, clip.sourceOut, width, height, jobId)
+    filters.push(`[${inputIndex}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=increase,${cropFilter},setsar=1,format=yuv420p[${videoLabel}]`)
     if (asset.hasAudio) {
       const gain = Math.max(-36, Math.min(12, clip.gainDb))
       filters.push(`[${inputIndex}:a:0]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS,volume=${gain.toFixed(2)}dB,aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[${audioLabel}]`)

@@ -403,3 +403,18 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   .assistant-lower-panel>.privacy-callout{margin-block:4px 1px}
   .assistant-lower-panel>.chat-composer{margin-block:5px}
 }
+
+.chat-status-panel{margin:0 9px 9px;padding:8px 9px;display:flex;flex-direction:column;gap:8px;border:1px solid rgba(88,220,202,.16);border-radius:9px;background:rgba(23,33,46,.72)}
+.chat-steps{display:flex;flex-wrap:wrap;gap:5px}
+.chat-step{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid var(--border);border-radius:999px;background:#121a25;color:var(--muted);font-size:7px;white-space:nowrap}
+.chat-step i{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.4}
+.chat-step-done{color:#7fd8c9}
+.chat-step-done i{opacity:1}
+.chat-step-active{color:var(--cyan);border-color:rgba(88,220,202,.5)}
+.chat-step-active i{opacity:1;animation:think 1.1s infinite ease-in-out}
+.chat-step-failed{color:var(--red)}
+.chat-step-failed i{opacity:1}
+.chat-approval{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.chat-approval-chip{display:inline-flex;align-items:center;gap:6px;color:var(--amber);font-size:8px;font-weight:700}
+.chat-quick-replies{display:flex;gap:6px}
+.chat-quick-replies .button{padding:0 10px;font-size:8px}
